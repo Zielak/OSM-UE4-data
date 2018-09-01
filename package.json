@@ -1,0 +1,22 @@
+{
+  "name": "osm-ue4-data",
+  "version": "0.1.0",
+  "description": "My playground for importing OSM data to Unreal Engine 4.",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "ts-node src/index.ts",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Darek Greenly",
+  "license": "ISC",
+  "dependencies": {
+    "node-expat": "git+git@github.com:Zielak/node-expat.git",
+    "boundingbox": "^0.1.1",
+    "overpass-frontend": "^1.0.1",
+    "ts-node": "^7.0.1",
+    "typescript": "^3.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^10.9.1"
+  }
+}
