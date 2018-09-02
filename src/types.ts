@@ -1,4 +1,11 @@
 
+export type WorkerState = {
+  prepared: boolean,
+  finished: boolean,
+  preparedByteStart?: number,
+  preparedByteEnd?: number,
+}
+
 export type GeometryItem = {
   lat: number,
   lon: number

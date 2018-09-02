@@ -1,7 +1,6 @@
 import * as fs from 'fs'
-import requestData from './requestData'
-import localData from './localData'
-import { GeometryItem } from './types'
+import c from 'chalk'
+import { GeometryItem, WorkerState } from './types'
 
 import { fork, ChildProcess } from 'child_process'
 import os from 'os'
@@ -13,7 +12,7 @@ const args = new Map<string, string>()
 // Default values
 args.set('input', 'C:/OSM/outputTFWaysBuilding.osm.xml')
 args.set('output', 'buildingsOsmosis.json')
-args.set('--workers', '2')
+args.set('--workers', '12')
 process.argv.forEach((val, index, array) => {
   if (index <= 1) return
   if (index === 2) args.set('input', val)
@@ -24,36 +23,89 @@ process.argv.forEach((val, index, array) => {
 
 const OUTPUT_DIR = `${__dirname}/../data/`
 const numCPUs = os.cpus().length
-const workers: Array<ChildProcess> = []
+const workers: Array<{ worker: ChildProcess, state: WorkerState }> = []
 const maxWorkers = Math.min(numCPUs, +args.get('--workers') || numCPUs)
 const inputFileSize = fs.statSync(args.get('input')).size
 const inputChunkSize = Math.round(inputFileSize / maxWorkers)
 
 const nodesMemory = new Map<number, GeometryItem>()
 
-for (var i = 0; i < maxWorkers; i++) {
-  workers.push(fork('src/worker.ts'))
+const allWorkersPrepared = () => workers.every(({ state }) => state.prepared)
+/**
+ * Worker will get back with 'prepared' event once
+ * it finds itcelf with proper xml tag begining.
+ */
+const workerPrepared = (state: WorkerState, offset: number, workerIdx: number) => {
+  console.log(c.bold.greenBright(`Worker [${workerIdx}] reported back with ${offset} bytes offset`))
+  state.prepared = true
+  state.preparedByteStart = offset
+  if (allWorkersPrepared()) {
+    console.log(c.bold.greenBright('### ALL WORKERS READY ###'))
+    allStartWorking()
+  }
 }
-workers.forEach((worker, idx) => {
+const allStartWorking = () => workers.forEach(({ state, worker }) => {
+  worker.send({
+    type: 'start',
+    start: state.preparedByteStart,
+    end: state.preparedByteEnd
+  })
+})
+
+for (var i = 0; i < maxWorkers; i++) {
+  console.log('spawning worker ' + i)
+  workers.push({
+    worker: fork('src/worker.ts'),
+    state: {
+      prepared: false,
+      finished: false
+    }
+  })
+}
+workers.forEach(({ worker, state }, idx) => {
   worker.on('message', (msg: WorkerMessage) => {
     switch (msg.type) {
       // case 'data': console.log(`data from [${idx}]: `, msg.data); break
-      case 'rememberNode': nodesMemory.set(msg.data.id, msg.data.node); break
-      case 'error': console.log(`ERROR on worker [${idx}]`, msg.data); break
-      case 'debug': console.log(`  [${idx}] - `, msg.data); break
+      case 'prepared':
+        workerPrepared(state, msg.data, idx)
+        break
+      case 'rememberNode':
+        nodesMemory.set(msg.data.id, msg.data.node)
+        break
+      case 'error':
+        console.log(c.red(`ERROR on worker [${idx}]`), msg.data)
+        break
+      case 'debug':
+        console.log(c.cyan(`  [${idx}] - `), msg.data)
+        break
     }
     // console.log(`Message from child[${idx}: ${JSON.stringify(msg)}`);
   })
   worker.on('exit', msg => {
-    console.log(`worker [${idx}] finished`)
+    state.finished = true
+    console.log(c.bold(`worker [${idx}] finished`))
   })
 
-  worker.send({
-    type: 'init',
-    inputPath: args.get('input'),
-    start: inputChunkSize * idx,
-    end: inputChunkSize * idx + inputChunkSize
-  })
+  if (idx === 0) {
+    // Only the first one should get file header
+    worker.send({
+      type: 'seekHeader',
+      inputPath: args.get('input'),
+      start: inputChunkSize * idx,
+      end: inputChunkSize * idx + inputChunkSize,
+      recordRegex: "(node|way)"
+    })
+  }
+  if (idx > 0) {
+    // The rest should seek their startBytes offset
+    worker.send({
+      type: 'prepare',
+      inputPath: args.get('input'),
+      start: inputChunkSize * idx,
+      end: inputChunkSize * idx + inputChunkSize,
+      recordRegex: "(node|way)"
+    })
+  }
 })
 
 /**
@@ -92,10 +144,10 @@ const saveTo = fileName => data => {
   // }
   fs.writeFile(targetFile, json, 'utf8', error => {
     if (error) {
-      console.log('ERROR saving to file!', error)
+      console.log(c.bgRed.white.bold('ERROR saving to file!'), error)
       return
     }
-    console.log('done saving to file')
+    console.log(c.bgGreen.white.bold('done saving to file'))
   })
 }
 
