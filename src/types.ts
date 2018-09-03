@@ -2,8 +2,14 @@
 export type WorkerState = {
   prepared: boolean,
   finished: boolean,
+  initialByteStart?: number,
+  initialByteEnd?: number,
+  preparedByteStartOffset?: number,
   preparedByteStart?: number,
   preparedByteEnd?: number,
+  currentByte?: number
+  xmlHeader?: string,
+  rootTagName?: string
 }
 
 export type GeometryItem = {

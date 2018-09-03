@@ -1,18 +1,17 @@
 import * as fs from 'fs'
 import c from 'chalk'
-import { GeometryItem, WorkerState } from './types'
-
 import { fork, ChildProcess } from 'child_process'
 import os from 'os'
-import { WorkerMessage } from './worker'
 
-// npm start -- C:/OSM/outputTFWaysBuilding.osm.xml buildingsOsmosis.json --workers=2
+import { GeometryItem, WorkerState } from './types'
+import { WorkerMessage } from './worker'
+import VisualProgress from './progress'
 
 const args = new Map<string, string>()
 // Default values
 args.set('input', 'C:/OSM/outputTFWaysBuilding.osm.xml')
 args.set('output', 'buildingsOsmosis.json')
-args.set('--workers', '12')
+args.set('--workers', '3')
 process.argv.forEach((val, index, array) => {
   if (index <= 1) return
   if (index === 2) args.set('input', val)
@@ -28,27 +27,78 @@ const maxWorkers = Math.min(numCPUs, +args.get('--workers') || numCPUs)
 const inputFileSize = fs.statSync(args.get('input')).size
 const inputChunkSize = Math.round(inputFileSize / maxWorkers)
 
+let visualProgress: VisualProgress
 const nodesMemory = new Map<number, GeometryItem>()
 
-const allWorkersPrepared = () => workers.every(({ state }) => state.prepared)
+const areAllWorkersPrepared = () => workers.every(({ state }) => state.prepared)
+
+const workerPrepared = (state: WorkerState) => {
+  state.prepared = true
+  if (areAllWorkersPrepared()) {
+    console.log(c.bold.greenBright(`\n### ALL WORKERS READY ###\n`))
+    allWorkersPrepareOffset()
+    allWorkersStart()
+    visualProgress = new VisualProgress(workers.map(el => el.state))
+  }
+}
+
+const workerFoundHeader = (state: WorkerState, msg: WorkerMessage, workerIdx: number) => {
+  console.log(c.bold.greenBright(`Worker [${workerIdx}] found file's header and root element's tagname : <${msg.rootTagName}> :
+${msg.xmlHeader}`))
+
+  // First worker updates the state of all others (and itself)
+  workers.forEach(({ state }, idx, workers) => {
+    if (idx > 0) state.xmlHeader = msg.xmlHeader
+    if (idx <= workers.length - 1) state.rootTagName = msg.rootTagName
+  })
+
+  workerPrepared(state)
+}
+
 /**
  * Worker will get back with 'prepared' event once
  * it finds itcelf with proper xml tag begining.
  */
-const workerPrepared = (state: WorkerState, offset: number, workerIdx: number) => {
+const workerReportsPrepared = (state: WorkerState, offset: number, workerIdx: number) => {
   console.log(c.bold.greenBright(`Worker [${workerIdx}] reported back with ${offset} bytes offset`))
-  state.prepared = true
-  state.preparedByteStart = offset
-  if (allWorkersPrepared()) {
-    console.log(c.bold.greenBright('### ALL WORKERS READY ###'))
-    allStartWorking()
-  }
+  state.preparedByteStartOffset = offset
+  workerPrepared(state)
 }
-const allStartWorking = () => workers.forEach(({ state, worker }) => {
+
+const allWorkersPrepareOffset = () => {
+  console.log(`got ${workers.length} workers`)
+  workers.forEach(({ state }, idx, workers) => {
+    if (idx === 0) {
+      // We already know the begining
+      state.preparedByteStart = state.initialByteStart
+      return
+    }
+    let lastWorkerState = workers[idx - 1].state
+    if (idx === workers.length - 1) {
+      // We already know the ending
+      state.preparedByteEnd = state.initialByteEnd
+    }
+    state.preparedByteStart = state.initialByteStart + state.preparedByteStartOffset
+    console.log(`  w${idx - 1} preparedEnd: ${lastWorkerState.preparedByteEnd}`)
+    lastWorkerState.preparedByteEnd = lastWorkerState.initialByteEnd + state.preparedByteStartOffset - 1
+    console.log(`  w${idx - 1}       \`--->: ${lastWorkerState.preparedByteEnd}`)
+  })
+}
+
+const allWorkersStart = () => workers.forEach(({ state, worker }, idx) => {
+  console.log(`[${idx}] = {
+  currentByte: ${state.currentByte},
+  initial : ${state.initialByteStart}\t${state.initialByteEnd},
+  prepared: ${state.preparedByteStart}\t${state.preparedByteEnd}
+},`)
+
   worker.send({
     type: 'start',
+    inputPath: args.get('input'),
     start: state.preparedByteStart,
-    end: state.preparedByteEnd
+    end: state.preparedByteEnd,
+    xmlHeader: state.xmlHeader,
+    rootTagName: state.rootTagName
   })
 })
 
@@ -66,14 +116,20 @@ workers.forEach(({ worker, state }, idx) => {
   worker.on('message', (msg: WorkerMessage) => {
     switch (msg.type) {
       // case 'data': console.log(`data from [${idx}]: `, msg.data); break
-      case 'prepared':
-        workerPrepared(state, msg.data, idx)
+      case 'foundHeader':
+        workerFoundHeader(state, msg, idx)
         break
+      case 'prepared':
+        workerReportsPrepared(state, msg.data, idx)
+        break
+      case 'progress':
+        state.currentByte = msg.data
+        visualProgress.updateWorker(idx, state)
       case 'rememberNode':
         nodesMemory.set(msg.data.id, msg.data.node)
         break
       case 'error':
-        console.log(c.red(`ERROR on worker [${idx}]`), msg.data)
+        console.log(c.red(`ERROR on worker [${idx}]`), JSON.stringify(msg.data))
         break
       case 'debug':
         console.log(c.cyan(`  [${idx}] - `), msg.data)
@@ -81,29 +137,33 @@ workers.forEach(({ worker, state }, idx) => {
     }
     // console.log(`Message from child[${idx}: ${JSON.stringify(msg)}`);
   })
-  worker.on('exit', msg => {
+  worker.on('exit', () => {
     state.finished = true
     console.log(c.bold(`worker [${idx}] finished`))
+    visualProgress.updateWorker(idx, state)
   })
 
   if (idx === 0) {
     // Only the first one should get file header
+    state.initialByteStart = 0
+    state.initialByteEnd = inputChunkSize * idx + inputChunkSize
     worker.send({
       type: 'seekHeader',
       inputPath: args.get('input'),
-      start: inputChunkSize * idx,
-      end: inputChunkSize * idx + inputChunkSize,
-      recordRegex: "(node|way)"
+      start: state.initialByteStart,
+      end: state.initialByteEnd
     })
   }
   if (idx > 0) {
     // The rest should seek their startBytes offset
+    state.initialByteStart = inputChunkSize * idx
+    state.initialByteEnd = inputChunkSize * idx + inputChunkSize
     worker.send({
       type: 'prepare',
       inputPath: args.get('input'),
-      start: inputChunkSize * idx,
-      end: inputChunkSize * idx + inputChunkSize,
-      recordRegex: "(node|way)"
+      start: state.initialByteStart,
+      end: state.initialByteEnd,
+      recordRegexp: '(node|way)'
     })
   }
 })

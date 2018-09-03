@@ -12,6 +12,7 @@
   "dependencies": {
     "boundingbox": "^0.1.1",
     "chalk": "^2.4.1",
+    "log-update": "^2.3.0",
     "node-expat": "git+git@github.com:Zielak/node-expat.git",
     "overpass-frontend": "^1.0.1",
     "ts-node": "^7.0.1",
