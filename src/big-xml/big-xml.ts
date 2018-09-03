@@ -73,6 +73,7 @@ class BigXmlReader extends events.EventEmitter {
       this.stream.pipe(gunzip)
       this.stream = gunzip
     }
+    // this.stream.on('readable', () => this.emit('debug', `readable?`))
     this.stream.on('data', onData)
     this.stream.on('error', onError)
     this.stream.on('end', () => this.streamFinished = true)

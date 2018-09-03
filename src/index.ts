@@ -123,6 +123,7 @@ workers.forEach(({ worker, state }, idx) => {
         workerReportsPrepared(state, msg.data, idx)
         break
       case 'progress':
+        console.log(`${idx}, progress: ${msg.data}`)
         state.currentByte = msg.data
         visualProgress.updateWorker(idx, state)
       case 'rememberNode':
