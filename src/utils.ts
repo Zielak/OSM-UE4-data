@@ -1,18 +1,35 @@
 
-// Numbers
+/**
+ * Numbers
+ */
 
 export const wrap = (val, min, max) => val - (max - min) * Math.floor(val / (max - min))
 export const limit = (val, min, max) => Math.max(Math.min(max, val), min)
 
-// Strings
+/**
+ * Strings
+ */
 
 export const excerpt = (val: string, maxChars = 200, ellipsis = ' … ') => {
-  const partLength = maxChars / 2 - (ellipsis.length + 0.5) / 2
-  // FIXME: works badly with strings shorter, around `maxChars`
-  return val.substr(0, partLength) + ellipsis + val.substr(-partLength)
+  // Shorter strings, just return them
+  if (val.length <= maxChars) return val
+
+  // Illegal, too long ellipsis should be trimmed
+  if (ellipsis.length > maxChars - 2) {
+    // Try shortening it beautifully
+    ellipsis = ellipsis.substring(ellipsis.length / 3, ellipsis.length / 3 * 2)
+    if (ellipsis.length > maxChars - 2) {
+      // Fuck you
+      ellipsis.substr(0, maxChars - 2)
+    }
+  }
+  const partLength = maxChars / 2 - (ellipsis.length) / 2
+  return val.substr(0, Math.ceil(partLength)) + ellipsis + val.substr(-Math.floor(partLength))
 }
 
-// Geographic
+/**
+ * Geographic
+ */
 
 // const times = 10000000
 // export const latToX = lat => (lat - 50.298) * times

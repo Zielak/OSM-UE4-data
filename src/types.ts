@@ -28,6 +28,8 @@ export type Boundary = {
   angleZ: number,
 }
 
+export type OSMObjectId = string
+
 export enum OSMObjectType {
   node = 'node',
   way = 'way',
@@ -35,7 +37,7 @@ export enum OSMObjectType {
 }
 
 export type OSMObject = {
-  id?: string,
+  id?: OSMObjectId,
   osm_id?: number,
   type: OSMObjectType,
   geometry: Geometry,
@@ -64,7 +66,7 @@ export type JsonXmlObject = {
     lat?: string,
     lon?: string,
 
-    id?: string,
+    id?: OSMObjectId,
   },
   text?: string,
   children: Array<JsonXmlChild>
@@ -80,13 +82,14 @@ export type JsonXmlChild = {
 }
 
 export type UEObject = {
-  Name?: string,
+  Name?: OSMObjectId,
   type: OSMObjectType,
   lat?: number,
   lon?: number,
   center_x?: number,
   center_y?: number,
   boundary?: Array<Boundary>
+  _incompleteBoundary?: Array<string>
   tags?: {
     [key: string]: string
   }

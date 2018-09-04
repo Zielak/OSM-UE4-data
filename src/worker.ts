@@ -1,11 +1,15 @@
 import c from 'chalk'
 import fs from 'fs'
+import ipc from 'node-ipc'
 import bigXml from './big-xml/big-xml'
-import { JsonXmlObject, JsonXmlChild } from './types'
+import geometryToBoundary from './buildBoundries'
+import { JsonXmlObject, JsonXmlChild, UEObject, OSMObjectId, Geometry } from './types'
 import { filterWayData, filterNodeData } from './filtersOsmosisJSON'
 
+ipc.config.id = process.argv[2]
+
 const d = (msg) => {
-  process.send({ type: 'debug', data: msg })
+  // process.send({ type: 'debug', data: msg })
 }
 
 type StreamLookupOptions = {
@@ -18,6 +22,12 @@ type StreamLookupResults = {
   string: string,
   offset: number
 }
+
+// The <node> objects that I found in my stream part.
+const localNodesMemory = new Map<OSMObjectId, UEObject>()
+
+const incompleteWays = new Map<OSMObjectId, UEObject>()
+const localWaysMemory = new Map<OSMObjectId, UEObject>()
 
 const startStreamLookup = async (options: StreamLookupOptions): Promise<StreamLookupResults> => {
   const { inputPath, start, end, step } = options
@@ -164,7 +174,7 @@ const prepare = (msg: WorkerMessage) => {
 
 const start = (msg: WorkerMessage) => {
 
-  process.send({ type: 'debug', data: `start: ${msg.start}, end: ${msg.end}` })
+  d(`start: ${msg.start}, end: ${msg.end}`)
 
   let currentByte = msg.start
 
@@ -176,33 +186,31 @@ const start = (msg: WorkerMessage) => {
   })
 
   reader.on('record', (record: JsonXmlObject) => {
-    // process.send({
-    //   type: 'debug',
-    //   data: `got record: ${JSON.stringify(record)}`
-    // })
     if (record.tag === 'way') {
       const element = filterWayData(record)
-      if (element) process.send({
-        type: 'data',
-        data: element
-      })
+      planBuildingGeometry(record.attrs.id, element)
     } else if (record.tag === 'node') {
       const element = filterNodeData(record)
+      localNodesMemory.set(record.attrs.id, element)
       process.send({
         type: 'rememberNode',
-        data: {
-          id: record.attrs.id,
-          node: element
-        }
+        data: record.attrs.id
       })
     }
   })
+
+  let delayProgress = 0
+  const progressThreshold = 1024 * 10
   reader.on('data', data => {
     currentByte += data.length
-    process.send({
-      type: 'progress',
-      data: currentByte
-    })
+    if ((delayProgress += data.length) > progressThreshold) {
+      // Delay sending progress.
+      delayProgress = 0
+      process.send({
+        type: 'progress',
+        data: currentByte
+      })
+    }
   })
   reader.on('error', error => {
     process.send({
@@ -210,17 +218,15 @@ const start = (msg: WorkerMessage) => {
       data: '' + error
     })
   })
-  reader.on('debug', data => {
-    process.send({
-      type: 'debug', data
-    })
-  })
-  reader.on('end', () => {
-    d('end...?')
-    // process.exit()
-  })
+  // reader.on('debug', data => {
+  //   d(data)
+  // })
+  // reader.on('end', () => {
+  //   d('end of file.')
+  // })
 
   reader.start()
+  startConstructionQueue()
 }
 
 process.on('message', (msg: WorkerMessage) => {
@@ -229,8 +235,59 @@ process.on('message', (msg: WorkerMessage) => {
     case 'start': start(msg); break
     case 'seekHeader': seekHeader(msg); break
     case 'prepare': prepare(msg); break
+    case 'findNodesAnswer': gotNodesAnswer(msg); break
   }
 })
+
+let buildingQueue: NodeJS.Timer
+/**
+ * Keep fetching nodes from other workers.
+ */
+const startConstructionQueue = () => {
+
+  buildingQueue = setTimeout(() => {
+    if (incompleteWays.size > 0) {
+      process.send(<WorkerMessage>{
+        type: 'findNodes',
+        data: Array.from(incompleteWays.keys())
+      })
+    } else {
+      startConstructionQueue()
+    }
+  }, 1000)
+
+}
+const gotNodesAnswer = (msg: WorkerMessage) => {
+  if (!Array.isArray(msg.data)) return
+  // TODO: 1. Confirm, that Master answered with all the nodes.
+  if (msg.data.some(el => el === undefined)) {
+    return
+  }
+
+  // TODO: 2. Get all required nodes from other workers.
+
+  // 3. Keep looking
+  startConstructionQueue()
+}
+const planBuildingGeometry = (id: OSMObjectId, element: UEObject) => {
+  if (hasAllNodes(element._incompleteBoundary)) {
+    element = buildBoundaryGeometry(element)
+    localWaysMemory.set(id, element)
+  } else {
+    incompleteWays.set(id, element)
+  }
+}
+
+const buildBoundaryGeometry = (element: UEObject): UEObject => {
+  const out: UEObject = {
+    ...element
+  }
+  // TODO: finish it
+  // const geometry: Geometry = out._incompleteBoundary
+
+  // out.boundary = geometryToBoundary(geometry)
+  return out
+}
 
 const validateStartEnd = (msg: WorkerMessage) => {
   if (typeof msg.start !== 'number' || typeof msg.end !== 'number') {
@@ -254,6 +311,18 @@ const validateFileInput = (msg: WorkerMessage) => {
 }
 const isValidTagNameCharacter = (char: string) =>
   !(char === ' ' || char === '>' || char === '/')
+
+// Do I have all the nodes required to finish this way?
+const hasAllNodes = (nodes: Array<OSMObjectId>): boolean => {
+  const required = nodes.length
+  let have = 0
+  for (const key in localNodesMemory.keys()) {
+    if (nodes.some(reqNode => key === reqNode)) {
+      have++
+    }
+  }
+  return have === required
+}
 
 export type WorkerMessage = {
   type: string,

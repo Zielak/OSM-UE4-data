@@ -2,23 +2,40 @@ import * as fs from 'fs'
 import c from 'chalk'
 import { fork, ChildProcess } from 'child_process'
 import os from 'os'
+import ipc from 'node-ipc'
 
-import { GeometryItem, WorkerState } from './types'
+import database from './database'
+import { GeometryItem, WorkerState, OSMObjectId } from './types'
 import { WorkerMessage } from './worker'
 import VisualProgress from './progress'
 
+const executionStart = new Date()
+
+ipc.config.id = 'master'
+
 const args = new Map<string, string>()
 // Default values
-args.set('input', 'C:/OSM/outputTFWaysBuilding.osm.xml')
+args.set('input', 'C:/OSM/silesia/outputWayKeyBuilding.osm.xml')
 args.set('output', 'buildingsOsmosis.json')
-args.set('--workers', '3')
+args.set('--workers', '12')
+args.set('--debug', 'false')
 process.argv.forEach((val, index, array) => {
   if (index <= 1) return
-  if (index === 2) args.set('input', val)
-  if (index === 3) args.set('output', val)
+  if (index === 2 && val.substr(0, 2) !== '--') {
+    args.set('input', val)
+  }
+  if (index === 3 && val.substr(0, 2) !== '--') {
+    args.set('output', val)
+  }
   const keyValue = val.split('=')
   args.set(keyValue[0], keyValue[1])
 })
+
+const d = (string) => {
+  if (args.get('--debug') === 'true') {
+    console.log(string)
+  }
+}
 
 const OUTPUT_DIR = `${__dirname}/../data/`
 const numCPUs = os.cpus().length
@@ -28,22 +45,28 @@ const inputFileSize = fs.statSync(args.get('input')).size
 const inputChunkSize = Math.round(inputFileSize / maxWorkers)
 
 let visualProgress: VisualProgress
-const nodesMemory = new Map<number, GeometryItem>()
 
 const areAllWorkersPrepared = () => workers.every(({ state }) => state.prepared)
 
 const workerPrepared = (state: WorkerState) => {
   state.prepared = true
   if (areAllWorkersPrepared()) {
-    console.log(c.bold.greenBright(`\n### ALL WORKERS READY ###\n`))
+    console.log(
+      c.bgGreenBright(`\n ### `) + c.bold(' ALL WORKERS READY ') + c.bgGreenBright(` ### \n`)
+    )
     allWorkersPrepareOffset()
     allWorkersStart()
     visualProgress = new VisualProgress(workers.map(el => el.state))
+    setInterval(() => {
+      if (visualProgress) {
+        visualProgress.updateNodesCount(database.count())
+      }
+    }, 1000)
   }
 }
 
 const workerFoundHeader = (state: WorkerState, msg: WorkerMessage, workerIdx: number) => {
-  console.log(c.bold.greenBright(`Worker [${workerIdx}] found file's header and root element's tagname : <${msg.rootTagName}> :
+  d(c.bold.greenBright(`Worker [${workerIdx}] found file's header and root element's tagname : <${msg.rootTagName}> :
 ${msg.xmlHeader}`))
 
   // First worker updates the state of all others (and itself)
@@ -60,13 +83,13 @@ ${msg.xmlHeader}`))
  * it finds itcelf with proper xml tag begining.
  */
 const workerReportsPrepared = (state: WorkerState, offset: number, workerIdx: number) => {
-  console.log(c.bold.greenBright(`Worker [${workerIdx}] reported back with ${offset} bytes offset`))
+  d(c.bold.greenBright(`Worker [${workerIdx}] reported back with ${offset} bytes offset`))
   state.preparedByteStartOffset = offset
   workerPrepared(state)
 }
 
 const allWorkersPrepareOffset = () => {
-  console.log(`got ${workers.length} workers`)
+  d(`got ${workers.length} workers`)
   workers.forEach(({ state }, idx, workers) => {
     if (idx === 0) {
       // We already know the begining
@@ -79,33 +102,38 @@ const allWorkersPrepareOffset = () => {
       state.preparedByteEnd = state.initialByteEnd
     }
     state.preparedByteStart = state.initialByteStart + state.preparedByteStartOffset
-    console.log(`  w${idx - 1} preparedEnd: ${lastWorkerState.preparedByteEnd}`)
+    d(`  w${idx - 1} preparedEnd: ${lastWorkerState.preparedByteEnd}`)
     lastWorkerState.preparedByteEnd = lastWorkerState.initialByteEnd + state.preparedByteStartOffset - 1
-    console.log(`  w${idx - 1}       \`--->: ${lastWorkerState.preparedByteEnd}`)
+    d(`  w${idx - 1}       \`--->: ${lastWorkerState.preparedByteEnd}`)
   })
 }
 
-const allWorkersStart = () => workers.forEach(({ state, worker }, idx) => {
-  console.log(`[${idx}] = {
+const allWorkersStart = () => {
+  workers.forEach(({ state, worker }, idx) => {
+    d(`[${idx}] = {
   currentByte: ${state.currentByte},
   initial : ${state.initialByteStart}\t${state.initialByteEnd},
   prepared: ${state.preparedByteStart}\t${state.preparedByteEnd}
 },`)
 
-  worker.send({
-    type: 'start',
-    inputPath: args.get('input'),
-    start: state.preparedByteStart,
-    end: state.preparedByteEnd,
-    xmlHeader: state.xmlHeader,
-    rootTagName: state.rootTagName
+    worker.send({
+      type: 'start',
+      inputPath: args.get('input'),
+      start: state.preparedByteStart,
+      end: state.preparedByteEnd,
+      xmlHeader: state.xmlHeader,
+      rootTagName: state.rootTagName
+    })
   })
-})
+  console.log(
+    c.bgGreenBright(`\n ### `) + c.bold(' WORKERS STARTING ') + c.bgGreenBright(` ### \n`)
+  )
+}
 
+console.log(`Spawning ${maxWorkers} workers`)
 for (var i = 0; i < maxWorkers; i++) {
-  console.log('spawning worker ' + i)
   workers.push({
-    worker: fork('src/worker.ts'),
+    worker: fork('src/worker.ts', [`worker${i}`]),
     state: {
       prepared: false,
       finished: false
@@ -115,7 +143,7 @@ for (var i = 0; i < maxWorkers; i++) {
 workers.forEach(({ worker, state }, idx) => {
   worker.on('message', (msg: WorkerMessage) => {
     switch (msg.type) {
-      // case 'data': console.log(`data from [${idx}]: `, msg.data); break
+      // case 'data': console.log(`data from[${ idx }]: `, msg.data); break
       case 'foundHeader':
         workerFoundHeader(state, msg, idx)
         break
@@ -123,24 +151,27 @@ workers.forEach(({ worker, state }, idx) => {
         workerReportsPrepared(state, msg.data, idx)
         break
       case 'progress':
-        console.log(`${idx}, progress: ${msg.data}`)
         state.currentByte = msg.data
         visualProgress.updateWorker(idx, state)
       case 'rememberNode':
-        nodesMemory.set(msg.data.id, msg.data.node)
+        database.insert(msg.data, idx)
         break
+      case 'findNodes':
+        pointWorkerToNodesOwners(msg.data, idx)
       case 'error':
-        console.log(c.red(`ERROR on worker [${idx}]`), JSON.stringify(msg.data))
+        console.log(c.red(`ERROR on worker[${idx}]`), JSON.stringify(msg.data))
         break
       case 'debug':
-        console.log(c.cyan(`  [${idx}] - `), msg.data)
+        if (args.get('--debug') === 'true') {
+          console.log(c.cyan(`  [${idx}]- `), msg.data)
+        }
         break
     }
-    // console.log(`Message from child[${idx}: ${JSON.stringify(msg)}`);
+    // console.log(`Message from child[${ idx }: ${ JSON.stringify(msg) }`);
   })
   worker.on('exit', () => {
     state.finished = true
-    console.log(c.bold(`worker [${idx}] finished`))
+    console.log(c.bold(`worker[${idx}]finished`))
     visualProgress.updateWorker(idx, state)
   })
 
@@ -169,6 +200,14 @@ workers.forEach(({ worker, state }, idx) => {
   }
 })
 
+const pointWorkerToNodesOwners = (nodes: Array<OSMObjectId>, requesterWorker: number) => {
+  const owners = database.gather(nodes)
+  workers[requesterWorker].worker.send(<WorkerMessage>{
+    type: 'findNodesAnswer',
+    data: owners
+  })
+}
+
 /**
  * 1. get the bbox from important data
  * 2. get all data from Overpass:
@@ -180,7 +219,7 @@ workers.forEach(({ worker, state }, idx) => {
 // Osiedla: 50.29699541650302,19.13441777229309,50.2998019107882,19.137722253799435
 // Cała Polska: 48.922499263758255,14.084472656249998,54.91451400766527,24.14794921875
 // Pierwszy kawałek polski: 52.68304276227741,14.084472656249998,54.91451400766527,17.5341796875
-const bboxInput = `50.29699541650302,19.13441777229309,50.2998019107882,19.137722253799435`.split(',')
+const bboxInput = `50.29699541650302, 19.13441777229309, 50.2998019107882, 19.137722253799435`.split(',')
 
 const bbox = {
   minlat: bboxInput[0],
@@ -193,7 +232,7 @@ const bbox = {
 // like bbox and output format
 const queries = {
   buildings: `way[building];`,
-  countries: `way[admin_level=2]`
+  countries: `way[admin_level = 2]`
 }
 
 // TODO: Streamify it? Can't wait for the whole dump to save...
@@ -208,7 +247,7 @@ const saveTo = fileName => data => {
       console.log(c.bgRed.white.bold('ERROR saving to file!'), error)
       return
     }
-    console.log(c.bgGreen.white.bold('done saving to file'))
+    console.log(c.bgGreenBright.white.bold('done saving to file'))
   })
 }
 

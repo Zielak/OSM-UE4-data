@@ -1,4 +1,3 @@
-import geometryToBoundary from './buildBoundries'
 import { JsonXmlObject, UEObject, JsonXmlChild, Geometry, GeometryItem } from './types'
 
 const reqWayFields = ['id', 'osm_id', 'type', 'bounds', 'center', 'geometry', 'nodes']
@@ -54,13 +53,12 @@ export const filterWayData = (obj: JsonXmlObject): UEObject => {
         }
       }
     }
-    // if (obj.children.some(el => el.tag === 'nd')) {
-    //   const geometry: Geometry = obj.children
-    //     .filter(el => el.tag === 'nd')
-    //     .map(el => nodesMemory.get(el.attrs.ref))
-
-    //   out.boundary = geometryToBoundary(geometry)
-    // }
+    if (obj.children.some(el => el.tag === 'nd')) {
+      // Remember just the IDs of all nodes required to "draw" this object
+      out._incompleteBoundary = obj.children
+        .filter(el => el.tag === 'nd')
+        .map(el => el.attrs.ref)
+    }
   }
   return out
 }
